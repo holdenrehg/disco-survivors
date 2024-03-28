@@ -1,0 +1,869 @@
+<html>
+
+<head>
+    <script>
+    // Globals
+    // ------------------------------------------
+    const KEY_LEFT = 37;
+    const KEY_RIGHT = 39;
+    const KEY_UP = 38;
+    const KEY_DOWN = 40;
+
+    const FACE_LEFT = 0;
+    const FACE_RIGHT = 1;
+
+    const WORLD_WIDTH = 2000;
+    const WORLD_HEIGHT = 2000;
+    const MAX_OBJECTS = 25000;
+    const ENEMY_SPAWN_COUNT_PER_WAVE = 50;
+    const ENEMY_SPAWN_TIME_BETWEEN_WAVES = 5000; // ms
+
+    const playerImageLeft = makeImage('player-1.L.png');
+    const playerImageLeft2 = makeImage('player-2.L.png');
+    const playerImageRight = makeImage('player-1.png');
+    const playerImageRight2 = makeImage('player-2.png');
+    const skeletonImageLeft = makeImage('skeleton-1.L.png');
+    const skeletonImageLeft2 = makeImage('skeleton-2.L.png');
+    const skeletonImageRight = makeImage('skeleton-1.png');
+    const skeletonImageRight2 = makeImage('skeleton-2.png');
+    const ballImage1 = makeImage('ball-1.png');
+    const ballImage2 = makeImage('ball-2.png');
+    const candyDroppedImage = makeImage('candy-dropped.png');
+    const candyImage = makeImage('candy.png');
+    const micImage = makeImage('mic.png');
+    const floorImage = makeImage('floor.png');
+
+    const gameRunning = true;
+    const targetFps = 60;
+    let player;
+    let canvas;
+    let canvasContainer;
+    let context;
+    let gameIntervalId;
+    let levelRunStart;
+    let input = {
+        right: false,
+        left: false,
+        up: false,
+        down: false,
+    };
+    let objects = [];
+    let enemiesDestroyed = 0;
+    let nextEnemyId = 0;
+    let timeSinceLastEnemySpawn = Date.now(); // ms
+
+    // Helper Functions
+    // ------------------------------------------
+
+    /**
+     * Clears the canvas background and sets it back
+     * to its default color.
+     */
+    function resetCanvas() {
+        // clear background
+        context.clearRect(
+            0, 0, canvas.width, canvas.height
+        );
+        context.beginPath();
+
+        // render background
+        context.fillStyle = 'black';
+        context.fillRect(
+            0, 0, canvas.width, canvas.height
+        );
+    }
+
+    /**
+     * Generates waves of enemies off screen every
+     * so often.
+     */
+    function spawnEnemies() {
+        if (Date.now() - timeSinceLastEnemySpawn < ENEMY_SPAWN_TIME_BETWEEN_WAVES) return;
+
+        if (objects.length > MAX_OBJECTS) return;
+
+        for (var i = 0; i <= ENEMY_SPAWN_COUNT_PER_WAVE; i++) {
+            const radius = randomRange(900, 1200);
+            const angle = randomRange(0, 360);
+            const randX = player.x + Math.sin(angle) * radius;
+            const randY = player.y + Math.cos(angle) * radius;
+            objects.push(new Enemy(randX, randY));
+        }
+        timeSinceLastEnemySpawn = Date.now();
+    }
+
+    // World Object Classes
+    // ------------------------------------------
+
+    class Player {
+        constructor(x, y) {
+            this.leftAnimation = new Animation([
+                { time: 12, image: playerImageLeft },
+                { time: 12, image: playerImageLeft2 },
+            ]);
+            this.rightAnimation = new Animation([
+                { time: 12, image: playerImageRight },
+                { time: 12, image: playerImageRight2 },
+            ]);
+            this.idle = true;
+            this.x = x;
+            this.y = y;
+            this.level = 1;
+            this.width = 30 * 2;
+            this.height = 33 * 2;
+            this.health = 50;
+            this.speed = 3;
+            this.items = [new MicWeapon(), new DiscoBallWeapon()];
+            this.xp = 0;
+            this.nextLevelXp = 10;
+            this.prevLevelXp = 0;
+            this.setDirection(FACE_LEFT);
+        }
+
+        update() {
+            // handle player movement...
+            if (input.right) this.x += this.speed;
+            if (input.left) this.x -= this.speed;
+            if (input.up) this.y -= this.speed;
+            if (input.down) this.y += this.speed;
+            this.idle = !input.right && !input.left && !input.up && !input.down;
+            focusCameraOn(this.x, this.y);
+
+            // update current animation...
+            this.animation.update(this.idle);
+
+            // set the attack state...
+            this.items.forEach(item => item.update());
+        }
+
+        draw() {
+            // draw weapons...
+            this.items.forEach(item => item.draw());
+
+            // draw the player sprite...
+            const image = this.animation.image();
+            image.width = this.width;
+            image.height = this.height;
+            context.drawImage(
+                image,
+                this.x - (this.width / 2.0),
+                this.y - (this.height / 2.0),
+                this.width, this.height
+            );
+        }
+
+        setDirection(direction) {
+            if (this.direction === direction) return;
+            this.direction = direction;
+            this.animation = this.direction === FACE_LEFT ? this.leftAnimation : this.rightAnimation;
+            this.animation.reset();
+        }
+
+        gainXp(xp) {
+            this.xp += xp;
+            if (this.xp >= this.nextLevelXp) this.levelUp();
+        }
+
+        levelUp() {
+            this.level += 1;
+            this.prevLevelXp = this.nextLevelXp;
+            this.nextLevelXp = this.nextLevelXp * 2.5;
+        }
+    }
+
+    class Enemy {
+        constructor(x, y) {
+            this.id = getNextEnemyId();
+            this.leftAnimation = new Animation([
+                { time: 100, image: skeletonImageLeft },
+                { time: 100, image: skeletonImageLeft2 },
+            ]);
+            this.rightAnimation = new Animation([
+                { time: 100, image: skeletonImageRight },
+                { time: 100, image: skeletonImageRight2 },
+            ]);
+            this.idle = false;
+            this.x = x;
+            this.prevX = x;
+            this.y = y;
+            this.prevY = y;
+            this.width = 30 * 2;
+            this.height = 33 * 2;
+            this.speed = 0.4;
+            this.health = 3;
+            this.attackStrength = 1;
+            this.attackSpeed = 500; // ms
+            this.lastAttackTime = Date.now();
+            this.destroyed = false;
+            this.setDirection(FACE_LEFT);
+        }
+
+        update() {
+            this.prevX = this.x;
+            this.prevY = this.y;
+
+            // handle death state, mark to be destroyed
+            // and don't do anything once health is at
+            // 0
+            if (this.health <= 0) {
+                this.destroy();
+                return;
+            }
+
+            // move towards the player...
+            var dx = player.x - this.x;
+            var dy = player.y - this.y;
+            var angle = Math.atan2(dy, dx);
+            this.x += this.speed * Math.cos(angle);
+            this.y += this.speed * Math.sin(angle);
+
+            // handle setting attack state...
+            let attacking = false;
+            const msSinceLastAttack =
+                Date.now() - this.lastAttackTime;
+            if (msSinceLastAttack > this.attackSpeed) {
+                attacking = true;
+                this.lastAttackTime = Date.now();
+            }
+
+            // handle direction...
+            this.setDirection(this.x > this.prevX ? FACE_RIGHT : FACE_LEFT);
+
+            // update current animation...
+            this.animation.update(this.idle);
+
+            const nearPlayer = pointInCircle(
+                this.x, this.y, player.x, player.y, 150
+            );
+            if (nearPlayer) {
+                // enemy is close enough to player to
+                // attack them
+                if (
+                    attacking &&
+                    Math.abs(dx) < 40 &&
+                    Math.abs(dy) < 40
+                ) {
+                    player.health = Math.max(
+                        player.health - this.attackStrength,
+                        0
+                    );
+                }
+            }
+        }
+
+        draw() {
+            const image = this.animation.image();
+            image.width = this.width;
+            image.height = this.height;
+            context.drawImage(
+                image, this.x, this.y, this.width, this.height
+            );
+        }
+
+        setDirection(direction, reset = true) {
+            if (this.direction === direction) return;
+            this.direction = direction;
+            this.animation = this.direction === FACE_LEFT ? this.leftAnimation : this.rightAnimation;
+            if (reset) this.animation.reset();
+        }
+
+        hit(strength) {
+            this.health -= strength;
+            objects.push(
+                new DamageTakenText(
+                    strength, this.x, this.y
+                )
+            );
+        }
+
+        destroy() {
+            if (this.destroyed) return;
+            this.destroyed = true;
+            enemiesDestroyed += 1;
+            objects.push(new Candy(this.x, this.y));
+        }
+    }
+
+    class Candy {
+        constructor(x, y) {
+            this.image = candyDroppedImage;
+            this.x = x;
+            this.y = y;
+            this.attractRadius = 200;
+            this.pickupRadius = 50;
+            this.xp = 1;
+        }
+
+        update() {
+            if (this.destroyed) return;
+
+            if (pointInCircle(this.x, this.y, player.x, player.y, this.pickupRadius)) {
+                this.pickup();
+                return;
+            }
+
+            if (pointInCircle(this.x, this.y, player.x, player.y, this.attractRadius)) {
+                this.x = lerp(this.x, player.x, 0.1);
+                this.y = lerp(this.y, player.y, 0.1);
+            }
+        }
+
+        draw() {
+            context.drawImage(
+                this.image,
+                this.x,
+                this.y,
+                this.image.width, this.image.height
+            );
+        }
+
+        pickup() {
+            if (this.destroyed) return;
+            this.destroy();
+            player.gainXp(this.xp);
+        }
+
+        destroy() {
+            if (this.destroyed) return;
+            this.destroyed = true;
+        }
+    }
+
+    class DamageTakenText {
+        constructor(text, x, y) {
+            this.text = text;
+            this.x = x;
+            this.y = y;
+            this.framesCount = 0;
+            this.growAnimationFrames = 40;
+            this.fadeAnimationFrames = 60;
+            this.fontSize = 10;
+            this.fontOpacity = 1;
+            this.growToSize = 32;
+            this.fillStyle = 'white';
+            this.strokeColor = 'black';
+        }
+
+        update() {
+            this.y -= 0.5;
+            if (this.framesCount < this.growAnimationFrames) {
+                this.fontSize = lerp(this.fontSize, this.growToSize, 0.4);
+            } else if (this.framesCount < this.growAnimationFrames + this.fadeAnimationFrames) {
+                this.fontOpacity = lerp(this.fontOpacity, 0, 0.25);
+            } else {
+                this.destroyed = true;
+            }
+            this.framesCount += 1;
+        }
+
+        draw() {
+            drawContext(
+                () => {
+                    context.font = `${this.fontSize}px monospace`;
+                    context.fillStyle = this.fillStyle;
+                    context.strokeColor = this.strokeColor;
+                    context.globalAlpha = this.fontOpacity;
+                },
+                () => context.fillText(this.text, this.x, this.y)
+            );
+        }
+    }
+
+    class Weapon {
+        constructor(speed, animationFrames, strength) {
+            this.attackSpeed = speed; // ms
+            this.attackAnimationFrames = animationFrames;
+            this.attackStrength = strength;
+            this.lastAttackTime = Date.now();
+            this.attacking = false;
+            this.attackFramesPassed = 0;
+            this.updateFramesPassed = 0;
+        }
+
+        update() {
+            const msSinceLastAttack =
+                Date.now() - this.lastAttackTime;
+            if (msSinceLastAttack > this.attackSpeed) {
+                this.attacking = true;
+                this.lastAttackTime = Date.now();
+            }
+            if (this.attacking) {
+                this.attackFramesPassed += 1;
+                if (this.attackFramesPassed >= this.attackAnimationFrames) {
+                    this.attacking = false;
+                    this.attackFramesPassed = 0;
+                }
+            }
+            this.updateFramesPassed += 1;
+        }
+
+        draw() {}
+
+        firstAttackFrame() {
+            return this.attacking && this.attackFramesPassed === 1;
+        }
+    }
+
+    class DiscoPool extends Weapon {
+        constructor() {
+            const speed = 2000;
+            const animationFrames = 5;
+            const strength = 1;
+            super(speed, animationFrames, strength);
+            this.updateFrames = 60 * 10;
+            this.animation = new Animation([
+                { time: 12, image: ballImage1 },
+                { time: 12, image: ballImage2 },
+            ]);
+            this.x = player.x + randomRange(-300, 300);
+            this.y = player.y + randomRange(-300, 300);
+            this.fillStyle = 'rgb(225, 180, 255)';
+            this.opacity = 0.7;
+            this.radius = 80;
+        }
+
+        update() {
+            super.update();
+            this.animation.update();
+            if (this.updateFramesPassed > this.updateFrames) {
+                this.destroyed = true;
+            }
+            this.opacity = lerp(this.opacity, 0, 0.002);
+
+            if (this.firstAttackFrame()) {
+                // horribly inefficient, iterate over all the objects to find
+                // enemies that we are hitting
+                for (const object of objects) {
+                    if (object instanceof Enemy) {
+                        if (!pointInCircle(object.x, object.y, this.x, this.y, this.radius)) continue;
+                        object.hit(this.attackStrength);
+                    }
+                }
+            }
+        }
+
+        draw() {
+            drawContext(
+                () => {
+                    context.fillStyle = this.fillStyle;
+                    context.globalAlpha = this.opacity;
+                }, () => {
+                    context.beginPath();
+                    context.ellipse(this.x, this.y, this.radius, this.radius, 0, 0, 360);
+                    context.fill();
+                },
+            );
+
+            // draw the enemy sprite...
+            const image = this.animation.image();
+            context.drawImage(
+                image,
+                this.x - (image.width / 3.2),
+                this.y - 140,
+                image.width / 2.0, image.height / 2.0
+            );
+        }
+    }
+
+    class DiscoBallWeapon extends Weapon {
+        constructor() {
+            const attackSpeed = 14000; // ms
+            const attackAnimationFrames = 5;
+            super(attackSpeed, attackAnimationFrames);
+            this.level = 4;
+        }
+
+        spawnCount() {
+            return this.level;
+        }
+
+        update() {
+            super.update();
+            if (this.firstAttackFrame()) {
+                const spawnCount = this.spawnCount();
+                for (var i = 0; i < spawnCount; i++) {
+                    setTimeout(() => {
+                        objects.push(
+                            new DiscoPool()
+                        );
+                    }, i * (700 + randomRange(0, 100)));
+                }
+            }
+        }
+
+        draw() {}
+    }
+
+    class MicWeapon extends Weapon {
+        constructor() {
+            const attackSpeed = 1000; // ms
+            const attackAnimationFrames = 5;
+            const attackStrength = 1;
+            super(attackSpeed, attackAnimationFrames, attackStrength);
+            this.level = 8;
+            this.radius = 100;
+            this.image = micImage;
+            this.angle = 0;
+            this.enemiesHit = {};
+        }
+
+        update() {
+            this.angle = (this.angle + (0.05 * this.level)) % 360;
+            this.x = player.x + Math.sin(this.angle) * this.radius;
+            this.y = player.y + Math.cos(this.angle) * this.radius;
+            for (const object of objects) {
+                if (object instanceof Enemy) {
+                    if (
+                        object.id in this.enemiesHit &&
+                        ((new Date()) - this.enemiesHit[object.id]) < this.attackSpeed
+                    ) {
+                        continue;
+                    }
+
+                    if (
+                        this.x > object.x - 50 &&
+                        this.x < object.x + 50 &&
+                        this.y > object.y - 50 &&
+                        this.y < object.y + 50
+                    ) {
+                        object.hit(this.attackStrength);
+                        this.enemiesHit[object.id] = new Date();
+                    }
+                }
+            }
+        }
+
+        draw() {
+            context.save();
+            context.translate(10, 0);
+            context.setTransform(-1, 0, 0, -1, this.x, this.y);
+            context.rotate(-this.angle);
+            context.drawImage(
+                this.image,
+                -this.image.width / 2, -this.image.height / 2
+            );
+            context.restore();
+
+            context.beginPath();
+            context.moveTo(player.x, player.y);
+            context.lineTo(this.x, this.y);
+            context.closePath();
+            context.stroke();
+        }
+    }
+
+    // Game Loop
+    // ------------------------------------------
+
+    function playGame() {
+        if (!gameRunning) {
+            clearInterval(gameIntervalId);
+            return;
+        }
+
+        // Update world state
+        // handle end game state
+        if (player.health <= 0) {
+            resetCanvas();
+            guiTopMiddle(function(x, y) {
+                context.font = '24px monospace';
+                context.fillStyle = 'white';
+                context.fillText(
+                    `Game Over`,
+                    x, y
+                );
+            });
+            return;
+        }
+        // update individual entities
+        for (const [index, object] of objects.entries()) {
+            object?.update();
+            if (object?.destroyed) {
+                objects.splice(index, 1); // not efficient
+            }
+        }
+        // spawner
+        spawnEnemies();
+
+        // draw
+        resetCanvas();
+
+        // draw background
+        const bgPattern = context.createPattern(floorImage, 'repeat');
+        context.fillStyle = bgPattern;
+        context.fillRect(0, 0, canvas.width, canvas.height);
+
+        // draw world objects
+        for (const object of objects) {
+            object?.draw();
+        }
+
+        // draw the gui
+        const timer = timeSince(levelRunStart);
+        const texts = [
+            `❤️: ${player.health}` +
+            ` 💀: ${enemiesDestroyed}` +
+            ` LV${player.level}` +
+            ` ${leftPad(timer.minutes, 2, 0)}:${leftPad(timer.seconds, 2, 0)}`,
+        ];
+        const measures = texts.map(text => measureTextDimensions(text));
+        guiTopMiddle(function(x, y) {
+            const width = Math.max(...measures.map(measure => measure.width));
+            const height = measures.reduce((acc, measure) => acc + measure.height, 0);
+            context.fillStyle = 'white';
+            context.fillRect(
+                x - (width / 2) - 10, y - height + 10,
+                width + 20, height * 2 - 20
+            );
+            context.font = `24px monospace`;
+            context.fillStyle = 'black';
+            for (const [index, text] of texts.entries()) {
+                context.fillText(
+                    text,
+                    x - (width / 2),
+                    y + (index * 30) + 10,
+                );
+            }
+        });
+
+        // draw xp bar...
+        guiPosition(0, 0, function(x, y) {
+            const currentXp = player.xp - player.prevLevelXp;
+            const nextLevelXp = player.nextLevelXp - player.prevLevelXp;
+            const percentage = !currentXp ? 0 : currentXp / nextLevelXp;
+            context.fillStyle = 'black';
+            context.fillRect(x, y, window.innerWidth, 26);
+
+            context.fillStyle = 'blue';
+            context.fillRect(
+                x + 2, y + 2,
+                (window.innerWidth - 4) * percentage,
+                22
+            );
+        });
+    }
+
+    // Helper Functions
+    // ------------------------------------------
+
+    function getNextEnemyId() {
+        const id = nextEnemyId;
+        nextEnemyId += 1;
+        return id;
+    }
+
+    function boundXToCanvas(x) {
+        const leftBound = 0;
+        const rightBound = canvas.width - window.innerWidth;
+        return Math.max(-rightBound, Math.min(leftBound, x));
+    }
+
+    function boundYToCanvas(y) {
+        const topBound = 0;
+        const bottomBound = canvas.height - window.innerHeight;
+        return Math.max(-bottomBound, Math.min(topBound, y));
+    }
+
+    function focusCameraOn(targetX, targetY) {
+        const freeZoneMargin = 30;
+        const xOffset = pxStrToNumber(canvasContainer.style.left);
+        const xCenter = window.innerWidth / 2;
+        const yOffset = pxStrToNumber(canvasContainer.style.top);
+        const yCenter = window.innerHeight / 2;
+
+        canvasContainer.style.left = lerp(
+            xOffset,
+            boundXToCanvas(-(targetX - xCenter)),
+            0.1
+        );
+
+        canvasContainer.style.top = lerp(
+            yOffset,
+            boundYToCanvas(-(targetY - yCenter)),
+            0.1
+        );
+    }
+
+    function lerp(from, to, degree = 1) {
+        return from + degree * (to - from);
+    }
+
+    function pxStrToNumber(value) {
+        return Number(value.replace('px', ''));
+    };
+
+    function guiPosition(x, y, cb) {
+        const xOffset = pxStrToNumber(canvasContainer.style.left);
+        const yOffset = pxStrToNumber(canvasContainer.style.top);
+
+        cb(x - xOffset, y - yOffset);
+    }
+
+    function guiTopMiddle(cb) {
+        const xCenter = window.innerWidth / 2;
+        guiPosition(xCenter, 50, cb);
+    }
+
+    function guiTopRight(cb) {
+        guiPosition(window.innerWidth - 100, 50, cb);
+    }
+
+    function drawContext(setContextCb, drawCb) {
+        const props = ['font', 'fillStyle', 'strokeColor', 'globalAlpha'];
+        const originalValues = props.reduce(
+            (acc, propName) => (acc[propName] = context[propName], acc), {}
+        );
+        setContextCb();
+        drawCb();
+        props.forEach(propName => context[propName] = originalValues[propName]);
+    }
+
+    function measureTextDimensions(text) {
+        const measure = context.measureText(text);
+        return {
+            width: measure.width,
+            height: measure.actualBoundingBoxAscent + measure.actualBoundingBoxDescent
+        };
+    }
+
+    function makeImage(src) {
+        const image = new Image();
+        image.src = src;
+        return image;
+    }
+
+    function timeSince(startDate) {
+        const epochStart = epoch(startDate);
+        const currentEpoch = epoch(new Date());
+        return {
+            minutes: Math.floor((currentEpoch - epochStart) / 60),
+            seconds: (currentEpoch - epochStart) % 60,
+        };
+    }
+
+    function epoch(date) {
+        return Math.floor(date / 1000);
+    }
+
+    function leftPad(toPad, length, padChar) {
+        const toPadLength = String(toPad).length;
+        if (toPadLength >= length) return toPad;
+        return `${(String(padChar) * (toPadLength - length))}${toPad}`;
+    }
+
+    function randomRange(from, to) {
+        return Math.random() * (to - from) + from;
+    }
+
+    function randomNegate(value) {
+        const multipler = Math.random() > 0.5 ? -1 : 1;
+        return value * multipler;
+    }
+
+    /**
+     * Checks if (pointX, pointY) collides with the circle
+     * at (circleX, circleY) with circleRadius.
+     * 
+     * @return bool
+     */
+    function pointInCircle(
+        pointX, pointY, circleX, circleY, circleRadius
+    ) {
+        let distance =
+            Math.pow(circleX - pointX, 2) +
+            Math.pow(circleY - pointY, 2);
+
+        return distance < Math.pow(circleRadius, 2);
+    }
+
+    class Animation {
+        frames = [ /*{time: ..., image: ...}*/ ];
+        currentIndex = 0;
+        framesPassed = 0;
+
+        constructor(frames) {
+            this.frames = frames;
+        }
+
+        image() {
+            return this.frames[this.currentIndex].image;
+        }
+
+        reset() {
+            this.currentIndex = 0;
+            this.currentFrameStart = new Date();
+        }
+
+        update(isIdle) {
+            if (isIdle) {
+                this.reset();
+                return;
+            }
+
+            const currentFrame = this.frames[this.currentIndex];
+            if (this.framesPassed >= currentFrame.time) {
+                this.next();
+            }
+            this.framesPassed += 1;
+        }
+
+        next() {
+            this.currentIndex = (this.currentIndex + 1) % this.frames.length;
+            this.framesPassed = 0;
+        }
+    }
+
+    // Game Initial Setup
+    // ------------------------------------------
+    // One time setup activities for event handlers
+    // and setting initial global values.
+
+    window.addEventListener('keydown', (e) => {
+        if (e.keyCode === KEY_LEFT) {
+            input.left = true;
+            player.setDirection(FACE_LEFT);
+        } else if (e.keyCode === KEY_RIGHT) {
+            input.right = true;
+            player.setDirection(FACE_RIGHT);
+        } else if (e.keyCode === KEY_UP) input.up = true;
+        else if (e.keyCode === KEY_DOWN) input.down = true;
+    });
+
+    window.addEventListener('keyup', (e) => {
+        if (e.keyCode === KEY_LEFT) input.left = false;
+        if (e.keyCode === KEY_RIGHT) input.right = false;
+        if (e.keyCode === KEY_UP) input.up = false;
+        if (e.keyCode === KEY_DOWN) input.down = false;
+        if (e.keyCode === 48) {
+            for (const object of objects) {
+                if (object instanceof Enemy) {
+                    object.destroy();
+                }
+            }
+        }
+    });
+
+    window.addEventListener('load', () => {
+        canvas = document.getElementById('canvas');
+        canvasContainer = document.getElementById('canvas-container');
+        context = canvas.getContext('2d');
+        player = new Player(
+            WORLD_WIDTH / 2, WORLD_HEIGHT / 2
+        );
+        objects.push(player);
+        levelRunStart = new Date();
+        gameIntervalId = setInterval(
+            playGame, 1000 / targetFps
+        );
+    });
+    </script>
+</head>
+
+<body style="overflow:hidden; padding:0; margin:0;">
+    <div id="canvas-container" style="position:absolute; top:0; left:0;">
+        <canvas id="canvas" width="2000" height="2000">
+        </canvas>
+    </div>
+</body>
+
+</html>
